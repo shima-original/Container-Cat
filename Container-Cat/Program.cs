@@ -20,6 +20,7 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Home/Error");
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
+    app.UseHttpsRedirection();
 }
 
 //dotnet aspnet-codegenerator controller -name HostsController -m HostAvailability -dc ContainerCatContext --relativeFolderPath Controllers --useDefaultLayout --referenceScriptLibraries --databaseProvider sqlite
@@ -35,7 +36,6 @@ var apiCollection = config.GetRequiredSection("ContainerApi");
 ArgumentNullException.ThrowIfNull(apiCollection);
 
 
-app.UseHttpsRedirection();
 app.UseStaticFiles();
 
 app.UseRouting();
