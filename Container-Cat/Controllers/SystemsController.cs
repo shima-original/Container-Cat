@@ -1,17 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Rendering;
-using Microsoft.EntityFrameworkCore;
-using Container_Cat.Data;
-using Container_Cat.Utilities.Models;
-using System.Net;
+﻿using Container_Cat.Containers.EngineAPI.Models;
 using Container_Cat.Containers.Models;
+using Container_Cat.Data;
 using Container_Cat.Utilities;
-using Container_Cat.Containers.EngineAPI.Models;
-using Container_Cat.Containers.EngineAPI;
+using Container_Cat.Utilities.Models;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using static Container_Cat.Utilities.Models.HostAddress;
 
 namespace Container_Cat.Controllers
 {
@@ -20,6 +15,7 @@ namespace Container_Cat.Controllers
         private readonly ContainerCatContext _context;
         private readonly HttpClient _httpClient;
         private SystemDataGathering _dataGatherer;
+
         public SystemsController(ContainerCatContext context, HttpClient client)
         {
             _context = context;
@@ -32,10 +28,14 @@ namespace Container_Cat.Controllers
         {
             if (_context.SystemDataObj != null)
             {
-                var results = await _context.SystemDataObj.Include(host => host.Containers).ToListAsync();
+                var results = await _context.SystemDataObj
+                    .Include(host => host.Containers)
+                    .Include(networks => networks.NetworkAddress)
+                    .ToListAsync();
                 return View(results);
             }
-            else return Problem("Entity set 'ContainerCatContext.SystemDataObj'  is null.");
+            else
+                return Problem("Entity set 'ContainerCatContext.SystemDataObj'  is null.");
         }
 
         // GET: Systems/Details/5
@@ -45,14 +45,14 @@ namespace Container_Cat.Controllers
             {
                 return NotFound();
             }
-
             var systemDataObj = await _context.SystemDataObj
+                .Include(host => host.Containers)
+                .ThenInclude(network => network.Ports)
                 .FirstOrDefaultAsync(m => m.Id == id);
             if (systemDataObj == null)
             {
                 return NotFound();
             }
-
             return View(systemDataObj);
         }
 
@@ -67,82 +67,68 @@ namespace Container_Cat.Controllers
         // For more details, see http://go.microsoft.com/fwlink/?LinkId=317598.
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Create([Bind("Ip")] string Ip)
+        public async Task<IActionResult> Create([Bind("Ip")] string hostname)
         {
-            HostAddress host = new HostAddress(Ip);
-            SystemDataObj systemDataObj = new SystemDataObj(host);
-            if (ModelState.IsValid)
-            {
-                //_context.Add(systemDataObj);
-                HostSystem<BaseContainer> systemObj = new HostSystem<BaseContainer>(systemDataObj);
-                //await _context.SaveChangesAsync();
-                if (systemObj.InstalledContainerEngine != ContainerEngine.Unknown)
-                {
-                    //Get containers as BaseContainer:
-                    HostSystem<DockerContainer> dockerHost = new HostSystem<DockerContainer>(systemDataObj);
-                    var containers = await _dataGatherer.GetContainersAsync(dockerHost);
-                    systemDataObj.AddBaseContainers(containers);
-                    _context.Add(systemDataObj);
-                    await _context.SaveChangesAsync();
-                    return RedirectToAction(nameof(Index));
-                }
-                else return RedirectToAction(nameof(Index));
-            }
-            else return RedirectToAction(nameof(Index));
+            if (!ModelState.IsValid) return RedirectToAction(nameof(Index));
+            if (hostname.IsNullOrEmpty()) return RedirectToAction(nameof(Index));
 
-        }
-        // GET: Systems/Edit/5
-        public async Task<IActionResult> Edit(Guid? id)
-        {
-            if (id == null || _context.SystemDataObj == null)
-            {
-                return NotFound();
-            }
+            var hostStatus = await _dataGatherer.IsAPIAvailableAsync(hostname);
+            if (hostStatus != HostAvailability.Connected) return RedirectToAction(nameof(Index));
 
-            var systemDataObj = await _context.SystemDataObj.FindAsync(id);
-            if (systemDataObj == null)
-            {
-                return NotFound();
-            }
-            return View(systemDataObj);
-        }
+            HostSystemDTO hostSystemDTO = new HostSystemDTO();
+            hostSystemDTO.InstalledContainerEngine = await _dataGatherer.ContainerEngineInstalledAsync(hostname);
+            hostSystemDTO.NetworkAddress = new HostAddress(hostname);
 
-        // POST: Systems/Edit/5
-        // To protect from overposting attacks, enable the specific properties you want to bind to.
-        // For more details, see http://go.microsoft.com/fwlink/?LinkId=317598.
-        [HttpPost]
-        [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(Guid id, [Bind("Id,InstalledContainerEngines")] SystemDataObj systemDataObj)
-        {
-            if (id != systemDataObj.Id)
+            if (hostSystemDTO.InstalledContainerEngine == ContainerEngine.Docker)
             {
-                return NotFound();
-            }
-
-            if (ModelState.IsValid)
-            {
-                try
-                {
-                    _context.Update(systemDataObj);
-                    await _context.SaveChangesAsync();
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    if (!SystemDataObjExists(systemDataObj.Id))
-                    {
-                        return NotFound();
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
+                //Get newContainers as BaseContainer:
+                HostSystem<DockerContainer> dockerHost = new HostSystem<DockerContainer>(hostSystemDTO);
+                var containers = await _dataGatherer.GetContainersAsync(dockerHost);
+                _context.Add(dockerHost);
+                hostSystemDTO.ConvertToBaseContainers(containers);
+                await _context.SaveChangesAsync();
                 return RedirectToAction(nameof(Index));
             }
-            return View(systemDataObj);
+            return RedirectToAction(nameof(Index));
         }
 
-        // GET: Systems/Delete/5
+        // GET: Systems/Update/5
+        public async Task<IActionResult> Update(Guid? id)
+        {
+            if (!ModelState.IsValid) return RedirectToAction(nameof(Index));
+            if (id == null) return RedirectToAction(nameof(Index));
+
+            var HostSystem = _context.HostSystems
+                .Where(x => x.Id == id)
+                .Include(x => x.Containers)
+                .Include(x => x.NetworkAddress)
+                .FirstOrDefault();
+            if (HostSystem  == null)
+            {
+                return NotFound();
+            }
+
+            var connectionStatus = _dataGatherer
+                .IsAPIAvailableAsync(HostSystem.NetworkAddress.Hostname)
+                .Result;
+            HostSystem .NetworkAddress.SetStatus(connectionStatus);
+            if (connectionStatus != HostAvailability.Connected) return BadRequest();
+
+            if (HostSystem .InstalledContainerEngine == ContainerEngine.Docker)
+            {
+                    //Get newContainers as BaseContainer:
+                    HostSystem<DockerContainer> dockerHost = new HostSystem<DockerContainer>(HostSystem.NetworkAddress);
+                    HostSystem.ReplaceToBaseContainers(await _dataGatherer.GetContainersAsync(dockerHost));
+            }
+            else if (HostSystem.InstalledContainerEngine == ContainerEngine.Podman)
+            {
+                    throw new NotImplementedException();
+            }
+            _context.Update(HostSystem);
+            _context.SaveChanges();
+            return RedirectToAction(nameof(Index));
+        }
+
         public async Task<IActionResult> Delete(Guid? id)
         {
             if (id == null || _context.SystemDataObj == null)
@@ -150,8 +136,7 @@ namespace Container_Cat.Controllers
                 return NotFound();
             }
 
-            var systemDataObj = await _context.SystemDataObj
-                .FirstOrDefaultAsync(m => m.Id == id);
+            var systemDataObj = await _context.SystemDataObj.FindAsync(id);
             if (systemDataObj == null)
             {
                 return NotFound();
@@ -169,19 +154,53 @@ namespace Container_Cat.Controllers
             {
                 return Problem("Entity set 'ContainerCatContext.SystemDataObj'  is null.");
             }
-            var systemDataObj = await _context.SystemDataObj.FindAsync(id);
-            if (systemDataObj != null)
+            //Explicit loading of data for deletion:
+            var HostSystem  = await _context.HostSystems 
+                .Where(x => x.Id == id)
+                //by id
+                .Include(host => host.Containers)
+                .ThenInclude(ports => ports.Ports)
+                //related Container.Ports objects
+                .Include(host => host.Containers)
+                .ThenInclude(mounts => mounts.Mounts)
+                //related Container.Mounts objects
+                .Include(container => container.Containers)
+                //related newContainers
+                .Include(networks => networks.NetworkAddress)
+                //related network info
+                .FirstAsync();
+            if (HostSystem  != null)
             {
-                _context.SystemDataObj.Remove(systemDataObj);
+                foreach (var container in HostSystem .Containers)
+                {
+                    _context.Mounts.RemoveRange(container.Mounts);
+                    _context.Ports.RemoveRange(container.Ports);
+                }
+                _context.BaseContainer.RemoveRange(HostSystem.Containers);
+                _context.HostAddresses.Remove(HostSystem.NetworkAddress);
+                _context.HostSystems.Remove(HostSystem);
             }
-            
             await _context.SaveChangesAsync();
             return RedirectToAction(nameof(Index));
         }
 
         private bool SystemDataObjExists(Guid id)
         {
-          return (_context.SystemDataObj?.Any(e => e.Id == id)).GetValueOrDefault();
+            return (_context.SystemDataObj?.Any(e => e.Id == id)).GetValueOrDefault();
+        }
+
+        public async Task<int> StageDeleteContainerByID(string id)
+        {
+            var containerToRemove = await _context.BaseContainer
+                .Include(x => x.Ports)
+                .Include(x => x.Mounts)
+                .FirstOrDefaultAsync();
+            if (containerToRemove == null)
+            {
+                return 0;
+            }
+            _context.Remove(containerToRemove);
+            return 1;
         }
     }
 }

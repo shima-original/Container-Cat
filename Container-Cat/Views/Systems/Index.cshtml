@@ -10,27 +10,35 @@
 <p>
     <a asp-action="Create">Create New</a>
 </p>
-<table class="table">
+<table width="100%">
     <thead>
         <tr>
             <th>
-                @Html.DisplayName("Host Systems");
+                @Html.DisplayName("Host System address")
+            </th>
+            <th>
+                @Html.DisplayName("Container count")
+            </th>
+            <th>
+                @Html.DisplayName("Connection status")
             </th>
             <th></th>
         </tr>
     </thead>
     <tbody>
 @foreach (var item in Model) {
-        <tr>
+            <tr>
+                <td>
+                    @Html.DisplayName($"{item.NetworkAddress.Hostname}")
+                </td>
+                <td>
+                    @Html.DisplayName($"{item.Containers.Count.ToString()}")
+                </td>
+                <td>
+                    @Html.DisplayName($"{item.NetworkAddress.Availability.ToString()}");
+                </td>
             <td>
-                @Html.DisplayFor(modelItem => item.NetworkAddress.Ip, "||", "item.Containers.Count"+" "+"containers installed")
-                @foreach (var container in item.Containers)
-                {
-                    @Html.DisplayFor(modelContainer => container.State, container.Name, container.Image)        
-                }
-            </td>
-            <td>
-                <a asp-action="Edit" asp-route-id="@item.Id">Edit</a> |
+                <a asp-action="Update" asp-route-id="@item.Id">Update</a> |
                 <a asp-action="Details" asp-route-id="@item.Id">Details</a> |
                 <a asp-action="Delete" asp-route-id="@item.Id">Delete</a>
             </td>
